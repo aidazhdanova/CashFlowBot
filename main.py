@@ -1,6 +1,8 @@
 from functools import wraps
 import telebot
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy import create_engine
 import os
 import sys
@@ -12,6 +14,8 @@ from telebot import types
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 load_dotenv()
+
+logging.FileHandler('logg.log')
 
 logging.basicConfig(
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -50,7 +54,10 @@ def cached(func):
 
 @cached
 def get_user(telegram_id):
-    return session.query(User).get(telegram_id)
+    try:
+        return session.query(User).get(telegram_id)
+    except NoResultFound:
+        return None
 
 
 @bot.message_handler(commands=['menu'])
@@ -62,23 +69,27 @@ def menu_handler(message):
 
 @bot.message_handler(commands=['start'])
 def start_handler(message):
-    user = session.query(User).filter_by(telegram_id=message.chat.id).first()
-    user.user_data = UserData(telegram_id=message.chat.id)
-    session.add(user)
-    session.commit()
+    try:
+        user = session.query(User).filter_by(telegram_id=message.chat.id).first()
 
-    if user is None:
-        user = User(telegram_id=message.chat.id)
-        session.add(user)
-        session.commit()
+        if user is None:
+            user = User(telegram_id=message.chat.id)
+            session.add(user)
+            session.commit()
+            user.user_data = UserData(telegram_id=message.chat.id)
+            session.commit()
+            bot.send_message(message.chat.id,
+                             'Привет! Я помогу тебе вести учёт финансов. '
+                             'Введи /menu, чтобы узнать все доступные команды.')
+        else:
+            bot.send_message(message.chat.id,
+                             'Ты уже зарегистрирован. '
+                             'Напиши /info, чтобы узнать свой баланс или /menu, '
+                             'чтобы узнать все доступные команды.')
+    except SQLAlchemyError:
         bot.send_message(message.chat.id,
-                         'Привет! Я помогу тебе вести учёт финансов. '
-                         'Введи /menu, чтобы узнать все доступные команды.')
-    else:
-        bot.send_message(message.chat.id,
-                         'Ты уже зарегистрирован. '
-                         'Напиши /info, чтобы узнать свой баланс или /menu, '
-                         'чтобы узнать все доступные команды.')
+                         'Кажется, что-то пошло не так. Попробуй позже.')
+        logger.error(f'Ошибка при обработке команды start {e}.')
 
 
 @bot.message_handler(func=lambda message: message.text == 'Доход')
@@ -88,72 +99,118 @@ def income_handler(message):
 
 
 def income_amount_handler(message):
-    amount = float(message.text)
+    try:
+        amount = float(message.text)
+    except ValueError:
+        bot.send_message(message.chat.id, 'Некорректная сумма. Введи число.')
+        return
     bot.send_message(message.chat.id,
                      'Введи дату дохода в формате ГГГГ-ММ-ДД.')
     bot.register_next_step_handler(message, income_date_handler, amount)
 
 
 def income_date_handler(message, amount):
-    date = message.text
-    bot.send_message(message.chat.id, 'Введи описание дохода.')
-    bot.register_next_step_handler(message, income_description_handler,
-                                   amount, date)
+    try:
+        date = message.text
+        bot.send_message(message.chat.id, 'Введи описание дохода.')
+        bot.register_next_step_handler(message, income_description_handler,
+                                       amount, date)
+    except Exception as e:
+        bot.send_message(message.chat.id, 
+                         'Произошла ошибка при добавлении описания дохода. '
+                         'Попробуй еще раз.')
+        logger.error(f'Ошибка при обработке описания дохода: {e}')
 
 
 def income_description_handler(message, amount, date):
-    description = message.text
-    user = session.query(User).filter_by(telegram_id=message.chat.id).first()
-    income = Income(user=user, amount=amount,
-                    date=date, description=description)
-    session.add(income)
-    session.commit()
-    bot.send_message(message.chat.id, f'Доход на сумму {amount} добавлен.')
+    try:
+        description = message.text
+        user = session.query(User).filter_by(telegram_id=message.chat.id).first()
+        income = Income(user=user, amount=amount,
+                        date=date, description=description)
+        session.add(income)
+        session.commit()
+        bot.send_message(message.chat.id, f'Доход на сумму {amount} добавлен.')
+    except Exception as e:
+        bot.send_message(message.chat.id, 'Произошла ошибка при добавлении дохода. '
+                         'Попробуй еще раз.')
+        logger.error(f'Ошибка при добавлении дохода: {e}')
 
 
 @bot.message_handler(func=lambda message: message.text == 'Расход')
 def expense_handler(message):
-    categories = session.query(ExpenseCategory).all()
-    keyboard = telebot.types.ReplyKeyboardMarkup(row_width=2)
-    for category in categories:
-        keyboard.add(category.name)
-    keyboard.add('/new_category')
-    bot.send_message(message.chat.id,
-                     'Выбери категорию расхода или добавь новую.',
-                     reply_markup=keyboard)
-    bot.register_next_step_handler(message, expense_category_handler)
+    try:
+        categories = session.query(ExpenseCategory).all()
+        keyboard = telebot.types.ReplyKeyboardMarkup(row_width=2)
+        for category in categories:
+            keyboard.add(category.name)
+        keyboard.add('Добавить новую категорию')
+        bot.send_message(message.chat.id, 
+                         'Выбери категорию расхода или добавь новую.',
+                         reply_markup=keyboard)
+        bot.register_next_step_handler(message, expense_category_handler)
+    except Exception as e:
+        bot.send_message(message.chat.id, f'Произошла ошибка: {e}')
+        logger.error(f'Ошибка при выборе категории расхода: {e}')
 
 
-def new_category_name_handler(message):
-    name = message.text
-    category = session.query(ExpenseCategory).filter_by(name=name).first()
-    if category is not None:
-        bot.send_message(message.chat.id, 'Такая категория уже существует. '
-                         'Попробуй еще раз.')
+def add_expense_category(message, category_name):
+    amount_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    amount_keyboard.add('Назад')
+
+    if category_name == 'Добавить новую категорию':
+        bot.send_message(message.chat.id, 'Введи название новой категории.')
         bot.register_next_step_handler(message, new_category_name_handler)
-    else:
-        category = ExpenseCategory(name=name)
-        session.add(category)
-        session.commit()
+        return
+
+    category = session.query(ExpenseCategory).filter_by(name=category_name).first()
+    if category is None:
         bot.send_message(message.chat.id,
-                         'Категория {} добавлена'.format(name))
+                         'Категория не найдена. Попробуй еще раз.')
+        return
+    bot.send_message(message.chat.id,
+                     'Введи сумму расхода:', 
+                     reply_markup=amount_keyboard)
+    bot.register_next_step_handler(message, expense_amount_handler, category)
 
 
 @bot.message_handler(commands=['new_category'])
 def expense_category_handler(message):
     category_name = message.text
-    if category_name == '/new_category':
-        bot.send_message(message.chat.id, 'Введи название новой категории.')
-        bot.register_next_step_handler(message, new_category_name_handler)
+    add_expense_category(message, category_name)
+
+
+def new_category_name_handler(message):
+    try:
+        name = message.text
+        category = session.query(ExpenseCategory).filter_by(name=name).first()
+        if category is not None:
+            bot.send_message(message.chat.id, 'Такая категория уже существует. '
+                                              'Введи другое название:')
+            bot.register_next_step_handler(message, new_category_name_handler)
+        else:
+            category = ExpenseCategory(name=name)
+            session.add(category)
+            session.commit()
+            bot.send_message(message.chat.id, f'Категория "{name}" добавлена.')
+            add_expense_category(message, name)
+    except Exception as e:
+        bot.send_message(message.chat.id, f'Произошла ошибка: {e}')
+        logger.error(f'Произошла ошибка при добавлении категории расходов: {e}')
+
+
+def expense_category_or_new_handler(message):
+    category_name = message.text
+    if category_name == 'Назад':
+        menu_handler(message)
     else:
         category = session.query(ExpenseCategory).filter_by(name=category_name).first()
         if category is None:
-            bot.send_message(message.chat.id,
-                             'Категория не найдена. Попробуй еще раз.')
+            bot.send_message(message.chat.id, 
+                             'Введи название новой категории.')
+            bot.register_next_step_handler(message, new_category_name_handler)
         else:
-            bot.send_message(message.chat.id, 'Введи сумму расхода.')
-            bot.register_next_step_handler(message,
-                                           expense_amount_handler, category)
+            add_expense_category(message, category.name)
 
 
 def expense_amount_handler(message, category):
@@ -165,20 +222,27 @@ def expense_amount_handler(message, category):
 
 
 def expense_date_handler(message, category, amount):
-    date = message.text
-    bot.send_message(message.chat.id, 'Введи описание расхода.')
-    bot.register_next_step_handler(message, expense_description_handler,
-                                   category, amount, date)
+    try:
+        date = message.text
+        bot.send_message(message.chat.id, 'Введи описание расхода.')
+        bot.register_next_step_handler(message, expense_description_handler, 
+                                       category, amount, date)
+    except Exception as e:
+        bot.send_message(message.chat.id, 
+                         'Произошла ошибка при обработке даты расхода. '
+                         'Попробуй еще раз.')
+        logger.error(f'Ошибка в обработчике даты расхода: {e}')
 
 
 def expense_description_handler(message, category, amount, date):
     description = message.text
     user = session.query(User).filter_by(telegram_id=message.chat.id).first()
-    expense = Expense(user=user, category=category, amount=amount,
-                      date=date, description=description)
+    expense = Expense(user=user, category=category,
+                      amount=amount, date=date, description=description)
     session.add(expense)
     session.commit()
-    bot.send_message(message.chat.id, f'Расход на сумму {amount} добавлен.')
+    bot.send_message(message.chat.id, 
+                     f'Расход на сумму {amount} для категории "{category.name}" добавлен.')
 
 
 @bot.message_handler(func=lambda message: message.text == 'Информация')
