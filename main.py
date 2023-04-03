@@ -231,7 +231,6 @@ def expense_amount_handler(message, category):
                                    category, amount_float)
 
 
-
 def expense_date_handler(message, category, amount):
     date = message.text
     if not is_valid_date(date):
