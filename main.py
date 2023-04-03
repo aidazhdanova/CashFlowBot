@@ -38,8 +38,7 @@ token = os.getenv('TOKEN')
 bot = telebot.TeleBot(token)
 
 
-commands = ['Добавить доход', 'Добавить расход',
-            'Информация', 'Посмотреть сумму расходов и доходов за период']
+commands = ['Добавить доход', 'Добавить расход', 'Информация', 'Посмотреть сумму расходов и доходов за период']
 commands_keyboard = types.ReplyKeyboardMarkup(resize_keyboard=True,
                                               row_width=2)
 for command in commands:
@@ -82,7 +81,7 @@ def start_handler(message):
 
 def get_or_create_user(message):
     try:
-        user = session.query(User).filter_by(Ftelegram_id=message.chat.id).first()
+        user = session.query(User).filter_by(telegram_id=message.chat.id).first()
 
         if user is None:
             user = User(telegram_id=message.chat.id)
@@ -104,14 +103,17 @@ def income_handler(message):
 
 
 def income_amount_handler(message):
+    amount = message.text
     try:
-        amount = float(message.text)
+        amount_float = float(amount)
     except ValueError:
-        bot.send_message(message.chat.id, 'Некорректная сумма. Введи число.')
+        bot.send_message(message.chat.id, 'Сумма дохода должна быть числом. '
+                         'Попробуй ещё раз.')
+        bot.register_next_step_handler(message, income_amount_handler)
         return
     bot.send_message(message.chat.id,
                      'Введи дату дохода в формате ГГГГ-ММ-ДД.')
-    bot.register_next_step_handler(message, income_date_handler, amount)
+    bot.register_next_step_handler(message, income_date_handler, amount_float)
 
 
 def income_date_handler(message, amount):
@@ -120,12 +122,12 @@ def income_date_handler(message, amount):
         bot.send_message(message.chat.id,
                          'Некорректный формат даты. '
                          'Введи дату в формате ГГГГ-ММ-ДД.')
-        bot.clear_step_handler_by_chat_id(message.chat.id)
+        bot.register_next_step_handler(message, income_date_handler, amount)
         return
-    bot.clear_step_handler_by_chat_id(message.chat.id)
     bot.send_message(message.chat.id, 'Введи описание дохода.')
     bot.register_next_step_handler(message, income_description_handler,
                                    amount, date)
+
 
 
 def income_description_handler(message, amount, date):
@@ -204,7 +206,6 @@ def new_category_name_handler(message):
 
 
 def expense_category_or_new_handler(message):
-
     category = session.query(ExpenseCategory).filter_by(name=category_name).first()
     if category is None:
         bot.send_message(message.chat.id,
@@ -215,11 +216,20 @@ def expense_category_or_new_handler(message):
 
 
 def expense_amount_handler(message, category):
-    amount = float(message.text)
-    bot.send_message(message.chat.id,
-                     'Введи дату расхода в формате ГГГГ-ММ-ДД.')
-    bot.register_next_step_handler(message, expense_date_handler,
-                                   category, amount)
+    amount = message.text
+    try:
+        amount_float = float(amount)
+    except ValueError:
+        bot.send_message(message.chat.id, 'Сумма расхода должна быть числом. '
+                         'Попробуй ещё раз.')
+        bot.register_next_step_handler(message, expense_amount_handler, 
+                                       category)
+        return
+
+    bot.send_message(message.chat.id, 'Введи дату расхода в формате ГГГГ-ММ-ДД.')
+    bot.register_next_step_handler(message, expense_date_handler, 
+                                   category, amount_float)
+
 
 
 def expense_date_handler(message, category, amount):
@@ -303,8 +313,7 @@ def info_handler(message):
     total_income = sum([income.amount for income in incomes])
     total_expense = sum([expense.amount for expense in expenses])
     balance = total_income - total_expense
-    info_text = f'Общий доход: {total_income:.2f}\n'
-    f'Общий расход: {total_expense:.2f}\nБаланс: {balance:.2f}'
+    info_text = f'Общий доход: {total_income:.2f}\nОбщий расход: {total_expense:.2f}\nБаланс: {balance:.2f}'
     bot.send_message(message.chat.id, info_text)
 
 
