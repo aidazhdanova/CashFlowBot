@@ -130,3 +130,5 @@ dmypy.json
 
 finance_bot.db/
 .finance_bot.db/
+.vscode/
+vscode/
